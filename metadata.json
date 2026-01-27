@@ -1,0 +1,7 @@
+{
+  "name": "CatPhish",
+  "description": "The only dating app where getting cat-phished is the point. Transform your selfie into a feline avatar and reveal your true self only to those who truly understand your vibe.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
