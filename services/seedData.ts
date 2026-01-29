@@ -43,13 +43,18 @@ const CAT_IMAGES = [
   "https://images.unsplash.com/photo-1592194996308-7b43878e84a6", "https://images.unsplash.com/photo-1577023311546-cdc07a8454d9"
 ];
 
-const CAT_NAMES = [
-  "Shadow", "Luna", "Mochi", "Oliver", "Simba", "Chloe", "Milo", "Whiskers", "Coco", "Bella",
-  "Charlie", "Toby", "Sophie", "Max", "Lucy", "Leo", "Jasper", "Daisy", "Felix", "Nala",
-  "Pumpkin", "Midnight", "Gizmo", "Cleo", "Buster", "Ziggy", "Pepper", "Frankie", "Blue", "Smokey",
-  "Boots", "Oreo", "Patches", "Sassy", "Zoe", "Misty", "Tiger", "Gracie", "Lily", "Millie",
-  "Rosie", "Ruby", "Willow", "Abby", "Angel", "Annie", "Baby", "Bear", "Duke", "Gus",
-  "Harley", "Koda", "Murphy", "Otis", "Riley"
+const HILARIOUS_CAT_NAMES = [
+  "Chairman Meow", "Sir Pounce-a-lot", "Professor Puddin'", "Mr. Bigglesworth", "Catalie Portman",
+  "Catrick Swayze", "Meowly Cyrus", "Purrr-fessor X", "Lucifur", "Santa Claws",
+  "Genghis Khat", "Flea-yoncé", "Paw-drey Hepburn", "Catpernicus", "Jean-Luc Picat",
+  "Claw-dia Schiffer", "Meow Zedong", "Skimbleshanks", "Whiskerus Prime", "Picatso",
+  "Bob Meow-ly", "Katy Purry", "Oprah Whisker", "Cinder-Ella", "Butch Catsidy",
+  "Sundance Kitten", "The Great Gats-by", "Kit-Kat", "General Tso", "Meowgi",
+  "Claw-rence of Arabia", "Sir Isaac Mewton", "Fishbait", "Lord Floof", "Madame Purr-fect",
+  "Count Fluffula", "Fur-nando Alonso", "Cat-man", "Mewbacca", "Jabba the Fluff",
+  "Luke Sky-whisker", "Obi-Wan Ke-meowy", "Darth Meow", "Princess Leia", "Han Solo",
+  "Indiana Paws", "Harry Paw-ter", "Ron Whisker-ly", "Hermione Ginger", "Albus Dumble-claw",
+  "Severus Snake-eye", "Lord Volde-mew", "Bilbo Baggins-paws", "Frodo Fur-ball", "Gandalf the Gray"
 ];
 
 const CORE_QUESTIONS: Question[] = [
@@ -75,7 +80,7 @@ const CORE_QUESTIONS: Question[] = [
     { id: "q7a", text: "Pure, divine superiority", trait: "Egotistical" }, { id: "q7b", text: "A dizzying fear of falling", trait: "Anxious" }, { id: "q7c", text: "A duty to protect the floor", trait: "Guardian" }, { id: "q7d", text: "Nothing, I'm going to napping here", trait: "Indifferent" }
   ]},
   { id: "q8", text: "A cardboard box appears. It is empty, yet perfect. Why?", type: "cat-based", options: [
-    { id: "q8a", text: "It defines my boundaries", trait: "Structured" }, { id: "q8b", text: "It hides my true form", trait: "Secretive" }, { id: "q8c", text: "It smells of potential", trait: "Optimistic" }, { id: "q8d", text: "It is a trap I choose to enter", trait: "Self-aware" }
+    { id: "q8a", text: "It defines my boundaries", trait: "Structured" }, { id: "q8b", text: "It hides my true form", trait: "Secretive" }, { id: "q8c", text: "It smells of potential", trait: "Optimistic" }, { id: "q8c", text: "It is a trap I choose to enter", trait: "Self-aware" }
   ]},
   { id: "q9", text: "Rain begins to tap on the window pane. The sound is:", type: "cat-based", options: [
     { id: "q9a", text: "A rhythm for my sorrow", trait: "Melancholic" }, { id: "q9b", text: "A reminder of my safety", trait: "Security-focused" }, { id: "q9c", text: "An annoying distraction", trait: "Irritable" }, { id: "q9d", text: "A song I must dance to", trait: "Playful" }
@@ -119,7 +124,7 @@ const CORE_QUESTIONS: Question[] = [
 ];
 
 export const seedPool: SeedUser[] = Array.from({ length: 55 }).map((_, i) => {
-  const catName = CAT_NAMES[i % CAT_NAMES.length];
+  const catName = HILARIOUS_CAT_NAMES[i % HILARIOUS_CAT_NAMES.length];
   const humanImg = HUMAN_IMAGES[i % HUMAN_IMAGES.length] + `?auto=format&fit=crop&w=800&q=80&sig=${i}`;
   const catImg = CAT_IMAGES[i % CAT_IMAGES.length] + `?auto=format&fit=crop&w=800&q=80&sig=${i}`;
   
@@ -138,7 +143,7 @@ export const seedPool: SeedUser[] = Array.from({ length: 55 }).map((_, i) => {
     user: {
       id: `u_seed_${i}`,
       displayName: catName,
-      realName: `Seed User ${i + 1}`,
+      realName: `Human of ${catName}`,
       dob: "1995-05-15",
       gender: i % 2 === 0 ? "Female" : "Male",
       location: i % 2 === 0 ? "Singapore" : "San Francisco, CA",

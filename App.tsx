@@ -65,6 +65,7 @@ const App: React.FC = () => {
 
   const [setupData, setSetupData] = useState({
     catName: '', realName: '', dob: '1995-01-01', phoneNumber: '',
+    gender: 'Female', sexualOrientation: 'Hetero',
     photos: ['', '', ''] as string[], catCandidates: [] as { image: string, iris: string }[],
     catPhoto: '', irisColor: '', coreTruth: ''
   });
@@ -152,7 +153,19 @@ const App: React.FC = () => {
 
   const currentMatches = useMemo(() => {
     if (!currentUser) return [];
-    return seedPool.map(seed => {
+    
+    // Filtering logic based on user preference
+    const genderFilteredPool = seedPool.filter(seed => {
+      if (currentUser.sexualOrientation === 'Hetero') {
+        return seed.user.gender !== currentUser.gender;
+      }
+      if (currentUser.sexualOrientation === 'Gay') {
+        return seed.user.gender === currentUser.gender;
+      }
+      return true; // Fluid/Other sees all
+    });
+
+    return genderFilteredPool.map(seed => {
       let score = 0;
       const totalAnswered = Object.keys(userAnswers).length;
       if (totalAnswered === 0) {
@@ -238,8 +251,8 @@ const App: React.FC = () => {
       const user: User = {
         id: 'u_' + Date.now(),
         displayName: setupData.catName, realName: setupData.realName, dob: setupData.dob, phoneNumber: setupData.phoneNumber,
-        gender: 'Not Specified', location: 'Global', bio: "Broadcasting frequency", interests: [],
-        religion: "Experimental", sexualOrientation: "Fluid", wantsKids: "Open", smokingStatus: "No",
+        gender: setupData.gender, location: 'Global', bio: "Broadcasting frequency", interests: [],
+        religion: "Experimental", sexualOrientation: setupData.sexualOrientation, wantsKids: "Open", smokingStatus: "No",
         humanPhotoUrl: setupData.photos[0], catPhotoUrl: setupData.catPhoto, irisColor: setupData.irisColor,
         dailyStreak: 0, questions: [], coreTruth: setupData.coreTruth, traitAnswers: []
       };
@@ -410,7 +423,7 @@ const App: React.FC = () => {
                 
                 <div className="space-y-4">
                    <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">WhatsApp Path</label>
-                   <input type="tel" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.phoneNumber} onChange={e => setSetupData(p => ({...p, phoneNumber: e.target.value}))} />
+                   <input type="tel" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.phoneNumber} onChange={e => setSetupData(s => ({...s, phoneNumber: e.target.value}))} />
                 </div>
              </div>
              <button onClick={updateProfile} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 transition-all active:scale-95">Sync Profile</button>
@@ -470,19 +483,36 @@ const App: React.FC = () => {
 
         {screen === AppScreen.SETUP_DETAILS && (
           <div className="min-h-screen bg-white p-8 pb-32 flex flex-col items-center overflow-y-auto text-slate-900">
-            <h2 className="text-2xl font-black italic mb-12">Final Details</h2>
-            <div className="w-full space-y-12">
-               <div className="space-y-6">
+            <h2 className="text-2xl font-black italic mb-8">Protocol Details</h2>
+            <div className="w-full space-y-10">
+               <div className="space-y-4">
+                  <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Your Identity</label>
+                  <div className="flex bg-slate-50 p-2 rounded-[2rem] border border-slate-100">
+                    <button onClick={() => setSetupData(p => ({...p, gender: 'Male'}))} className={`flex-1 py-4 rounded-xl font-black text-xs transition-all ${setupData.gender === 'Male' ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400'}`}>Male</button>
+                    <button onClick={() => setSetupData(p => ({...p, gender: 'Female'}))} className={`flex-1 py-4 rounded-xl font-black text-xs transition-all ${setupData.gender === 'Female' ? 'bg-slate-900 text-white shadow-lg' : 'text-slate-400'}`}>Female</button>
+                  </div>
+               </div>
+
+               <div className="space-y-4">
+                  <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Preference</label>
+                  <div className="flex bg-slate-50 p-2 rounded-[2rem] border border-slate-100">
+                    <button onClick={() => setSetupData(p => ({...p, sexualOrientation: 'Hetero'}))} className={`flex-1 py-4 rounded-xl font-black text-[10px] transition-all ${setupData.sexualOrientation === 'Hetero' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400'}`}>Straight</button>
+                    <button onClick={() => setSetupData(p => ({...p, sexualOrientation: 'Gay'}))} className={`flex-1 py-4 rounded-xl font-black text-[10px] transition-all ${setupData.sexualOrientation === 'Gay' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400'}`}>Same Gender</button>
+                    <button onClick={() => setSetupData(p => ({...p, sexualOrientation: 'Fluid'}))} className={`flex-1 py-4 rounded-xl font-black text-[10px] transition-all ${setupData.sexualOrientation === 'Fluid' ? 'bg-orange-600 text-white shadow-lg' : 'text-slate-400'}`}>Fluid</button>
+                  </div>
+               </div>
+
+               <div className="space-y-4">
                   <div className="flex flex-col gap-1 text-center">
                     <label className="text-[10px] font-black uppercase tracking-widest text-orange-600">Protocol Entry Truth</label>
                     <p className="text-[9px] font-bold text-slate-400 italic">This initial choice is permanent.</p>
                   </div>
-                  <div className="grid gap-3">
+                  <div className="grid gap-3 max-h-[300px] overflow-y-auto pr-2">
                     {CORE_VIBE_TRUTHS.map(truth => (
                       <button 
                         key={truth.id} 
                         onClick={() => setSetupData(p => ({...p, coreTruth: truth.text}))} 
-                        className={`w-full p-6 text-left rounded-[2rem] font-black text-sm border-2 transition-all active:scale-[0.98] ${setupData.coreTruth === truth.text ? 'bg-slate-900 text-white border-slate-900 shadow-xl' : 'bg-slate-50 text-slate-900 border-slate-100'}`}
+                        className={`w-full p-5 text-left rounded-[1.8rem] font-black text-xs border-2 transition-all active:scale-[0.98] ${setupData.coreTruth === truth.text ? 'bg-slate-900 text-white border-slate-900 shadow-xl' : 'bg-slate-50 text-slate-900 border-slate-100'}`}
                       >
                         {truth.text}
                       </button>
@@ -490,7 +520,7 @@ const App: React.FC = () => {
                   </div>
                </div>
             </div>
-            <button onClick={startOnboarding} disabled={!setupData.coreTruth} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 transition-all active:scale-95 disabled:opacity-30">Finish Setup</button>
+            <button onClick={startOnboarding} disabled={!setupData.coreTruth} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-10 transition-all active:scale-95 disabled:opacity-30">Finish Setup</button>
           </div>
         )}
 
