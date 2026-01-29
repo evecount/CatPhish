@@ -1,390 +1,566 @@
 
-import React, { useState } from 'react';
-import { AppScreen, UserProfile, UserAnswer } from './types';
-import { transformToCat, generateQuizFromAnswers } from './services/geminiService';
+import React, { useState, useEffect, useMemo } from 'react';
+import { AppScreen, User, Match, Question, FrequencyInsight } from './types';
+import { transformToCat, generateFrequencyInsight } from './services/geminiService';
+import { seedPool, getCoreQuestions, CORE_VIBE_TRUTHS } from './services/seedData';
 import ProfileCard from './components/ProfileCard';
 
-const THIRTY_SIX_QUESTIONS = [
-  "If you could share a silver platter of salmon with anyone in the world, who would it be?",
-  "Do you dream of becoming an internet-famous feline? In what way?",
-  "Before meowing at someone, do you ever rehearse your purr? Why?",
-  "What would be a “perfect” day in your cardboard box?",
-  "When did you last sing to the moon? Or to another stray?",
-  "If you lived 9 lives, would you rather keep a sharp kitten mind or a sleek predator body for the last 6?",
-  "Do you have a secret hunch about how you'll lose your 9th life?",
-  "Name three things you and your future pride-mate appear to have in common.",
-  "For what in your territory do you feel most grateful?",
-  "If you could change anything about the litter box you were raised in, what would it be?",
-  "If you could wake up tomorrow having gained any one feline ability (like always landing on your feet), what would it be?",
-  "What is the greatest catch of your life?",
-  "What do you value most in a fellow alley cat?",
-  "What is your most treasured memory of a warm sunbeam?",
-  "What is your most terrible memory of a cold bath?",
-  "What does being part of a pride mean to you?",
-  "What roles do grooming and affection play in your life?",
-  "How do you feel about your relationship with the Mother of your litter?",
-  "Complete this sentence: “I wish I had a human with whom I could share ... “",
-  "If you were to die this evening with no opportunity to communicate with anyone, what would you most regret not having meowed to someone?",
-  "Your scratching post is on fire. You have time to save one item. What is it?"
-];
+// Firebase Imports
+import { doc, setDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import { db } from './services/firebase';
+
+const STORAGE_KEY = 'CATPHISH_V1_STATE';
+
+const LoadingOverlay: React.FC<{ 
+  text: string; 
+  subtext?: string; 
+  progress?: number; 
+  cyclePhotos?: string[] 
+}> = ({ text, subtext, progress, cyclePhotos }) => {
+  const [photoIdx, setPhotoIdx] = useState(0);
+  useEffect(() => {
+    if (cyclePhotos && cyclePhotos.length > 0) {
+      const interval = setInterval(() => setPhotoIdx((prev) => (prev + 1) % cyclePhotos.length), 1000);
+      return () => clearInterval(interval);
+    }
+  }, [cyclePhotos]);
+
+  return (
+    <div className="fixed inset-0 z-[3000] bg-slate-900/80 backdrop-blur-2xl flex flex-col items-center justify-center p-10 text-center animate-in fade-in duration-300">
+      <div className="relative mb-12">
+        {cyclePhotos && cyclePhotos.length > 0 ? (
+          <div className="w-40 h-40 rounded-[3rem] overflow-hidden border-4 border-orange-500 shadow-2xl animate-pulse">
+            <img src={cyclePhotos[photoIdx]} className="w-full h-full object-cover" alt="Loading..." />
+          </div>
+        ) : (
+          <div className="w-24 h-24 border-8 border-orange-500/20 border-t-orange-500 rounded-full animate-spin shadow-2xl" />
+        )}
+        {progress !== undefined && (
+          <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 bg-orange-600 text-white px-3 py-1 rounded-full text-[10px] font-black">{Math.round(progress)}%</div>
+        )}
+      </div>
+      <h2 className="text-3xl font-black italic text-white mb-3 tracking-tighter">{text}</h2>
+      {subtext && <p className="text-orange-500 text-[10px] font-black uppercase tracking-[0.4em]">{subtext}</p>}
+    </div>
+  );
+};
 
 const App: React.FC = () => {
   const [screen, setScreen] = useState<AppScreen>(AppScreen.LANDING);
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentDay, setCurrentDay] = useState(1);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+  const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set());
+  const [analysisHistory, setAnalysisHistory] = useState<FrequencyInsight[]>([]);
+  const [userAnswers, setUserAnswers] = useState<Record<string, string>>({});
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
   const [loading, setLoading] = useState(false);
+  const [isTransforming, setIsTransforming] = useState(false);
+  const [transformProgress, setTransformProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [showAbout, setShowAbout] = useState(false);
+  
+  const [currentQuestionInDayIndex, setCurrentQuestionInDayIndex] = useState(0);
+  const QUESTIONS_PER_DAY = 5;
 
-  // Setup State
-  const [setupName, setSetupName] = useState('');
-  const [setupAge, setSetupAge] = useState<string>('24');
-  const [setupPhoto, setSetupPhoto] = useState('');
-  const [setupAnswers, setSetupAnswers] = useState<UserAnswer[]>([]);
-  const [coreTruth, setCoreTruth] = useState('');
-  const [currentDraftAnswer, setCurrentDraftAnswer] = useState('');
-  const [selectedQuestionIndex, setSelectedQuestionIndex] = useState<number | null>(null);
+  const [setupData, setSetupData] = useState({
+    catName: '', realName: '', dob: '1995-01-01', phoneNumber: '',
+    photos: ['', '', ''] as string[], catCandidates: [] as { image: string, iris: string }[],
+    catPhoto: '', irisColor: '', coreTruth: ''
+  });
 
-  const [activeQuiz, setActiveQuiz] = useState<{ profile: UserProfile, questionIndex: number } | null>(null);
+  // --- PERSISTENCE: HYBRID FIREBASE + LOCALSTORAGE ---
+  useEffect(() => {
+    const restoreState = async () => {
+      // 1. Try LocalStorage for the User ID first
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const data = JSON.parse(saved);
+          if (data.currentUser?.id) {
+            // 2. Sync from Firestore for the latest truths
+            const docRef = doc(db, "users", data.currentUser.id);
+            const docSnap = await getDoc(docRef);
+            
+            if (docSnap.exists()) {
+              const cloudData = docSnap.data();
+              setCurrentUser(cloudData.profile);
+              setUserAnswers(cloudData.answers || {});
+              setAnalysisHistory(cloudData.analysis || []);
+              setCurrentDay(cloudData.currentDay || 1);
+              setRevealedIds(new Set(cloudData.revealedIds || []));
+              setConnectedIds(new Set(cloudData.connectedIds || []));
+              setScreen(AppScreen.DAILY_DASHBOARD);
+            } else {
+              // Fallback to local if cloud fails
+              setCurrentUser(data.currentUser);
+              setUserAnswers(data.userAnswers || {});
+              setAnalysisHistory(data.analysisHistory || []);
+              setCurrentDay(data.currentDay || 1);
+              setScreen(AppScreen.DAILY_DASHBOARD);
+            }
+          }
+        } catch (e) { console.error("Restore Failed", e); }
+      }
+    };
+    restoreState();
+  }, []);
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => setSetupPhoto(reader.result as string);
-      reader.readAsDataURL(file);
+  // Sync to Cloud whenever major state changes
+  useEffect(() => {
+    if (currentUser?.id) {
+      const syncToCloud = async () => {
+        try {
+          await setDoc(doc(db, "users", currentUser.id), {
+            profile: currentUser,
+            answers: userAnswers,
+            analysis: analysisHistory,
+            currentDay,
+            revealedIds: Array.from(revealedIds),
+            connectedIds: Array.from(connectedIds),
+            lastActive: new Date().toISOString()
+          }, { merge: true });
+          
+          // Also update local for offline safety
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            currentUser, userAnswers, analysisHistory, currentDay
+          }));
+        } catch (e) { console.error("Cloud Sync Failed", e); }
+      };
+      syncToCloud();
     }
-  };
+  }, [currentUser, userAnswers, analysisHistory, currentDay, revealedIds, connectedIds]);
 
-  const handleEnterLitterBox = async () => {
-    if (!(await (window as any).aistudio.hasSelectedApiKey())) {
-      await (window as any).aistudio.openSelectKey();
+  const coreQuestions = useMemo(() => getCoreQuestions(), []);
+
+  const questionOffset = useMemo(() => {
+    const idStr = currentUser?.id || 'temp';
+    let hash = 0;
+    for (let i = 0; i < idStr.length; i++) {
+      hash = ((hash << 5) - hash) + idStr.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash) % coreQuestions.length;
+  }, [currentUser, coreQuestions.length]);
+
+  const dailyQuestions = useMemo(() => {
+    const dayOffset = (currentDay - 1) * QUESTIONS_PER_DAY;
+    const questions = [];
+    for (let i = 0; i < QUESTIONS_PER_DAY; i++) {
+      const idx = (questionOffset + dayOffset + i) % coreQuestions.length;
+      questions.push(coreQuestions[idx]);
+    }
+    return questions;
+  }, [currentDay, coreQuestions, questionOffset]);
+
+  const currentQuestion = dailyQuestions[currentQuestionInDayIndex];
+
+  const currentMatches = useMemo(() => {
+    if (!currentUser) return [];
+    return seedPool.map(seed => {
+      let score = 0;
+      const totalAnswered = Object.keys(userAnswers).length;
+      if (totalAnswered === 0) {
+        score = 0.5;
+      } else {
+        let matchCount = 0;
+        Object.keys(userAnswers).forEach(qId => {
+          if (seed.answers[qId] === userAnswers[qId]) matchCount++;
+        });
+        score = (matchCount / totalAnswered) * 0.85 + (Math.random() * 0.1);
+      }
+      return {
+        id: `match-${seed.user.id}`,
+        users: [currentUser.id, seed.user.id] as [string, string],
+        compatibilityScore: Math.min(0.99, score),
+        sharedTraits: [],
+        status: 'pending' as const,
+        createdAt: new Date().toISOString(),
+        targetUser: seed.user
+      };
+    }).sort((a, b) => b.compatibilityScore - a.compatibilityScore).slice(0, 15);
+  }, [currentUser, userAnswers]);
+
+  const handleEnter = async () => {
+    // Check for API key logic (sandboxed vs local)
+    if (typeof (window as any).aistudio !== 'undefined') {
+       if (!(await (window as any).aistudio.hasSelectedApiKey())) await (window as any).aistudio.openSelectKey();
     }
     setScreen(AppScreen.SETUP_BASICS);
   };
 
-  const addAnswer = () => {
-    if (selectedQuestionIndex === null || !currentDraftAnswer) return;
-    const q = THIRTY_SIX_QUESTIONS[selectedQuestionIndex];
-    setSetupAnswers(prev => [...prev, { question: q, answer: currentDraftAnswer }]);
-    setCurrentDraftAnswer('');
-    setSelectedQuestionIndex(null);
+  const generateProxies = async () => {
+    const validPhotos = setupData.photos.filter(p => !!p);
+    if (validPhotos.length === 0) return;
+    setIsTransforming(true);
+    setTransformProgress(0);
+    const candidates: { image: string, iris: string }[] = [];
+    try {
+      for (let i = 0; i < validPhotos.length; i++) {
+        const result = await transformToCat(validPhotos[i]);
+        candidates.push({ image: result.catImage, iris: result.eyeColor });
+        setTransformProgress(((i + 1) / validPhotos.length) * 100);
+      }
+      setSetupData(prev => ({ ...prev, catCandidates: candidates }));
+      setScreen(AppScreen.SETUP_PICK_CAT);
+    } catch (e: any) {
+      if (e?.message?.includes("Requested entity was not found") && (window as any).aistudio) {
+        await (window as any).aistudio.openSelectKey();
+      }
+      setError("Transformation protocol failed. Check your API key.");
+    } finally { setIsTransforming(false); }
+  };
+
+  const handleChoice = async (choiceId: string) => {
+    const qId = currentQuestion.id;
+    const newAnswers = { ...userAnswers, [qId]: choiceId };
+    setUserAnswers(newAnswers);
+
+    if (currentQuestionInDayIndex < dailyQuestions.length - 1) {
+      setCurrentQuestionInDayIndex(prev => prev + 1);
+    } else {
+      setLoading(true);
+      try {
+        const dayAnswers = dailyQuestions.map(q => `Q: ${q.text} A: ${q.options.find(o => o.id === newAnswers[q.id])?.text}`);
+        const insight = await generateFrequencyInsight(currentDay, dayAnswers, setupData.coreTruth || currentUser?.coreTruth || "");
+        setAnalysisHistory(prev => [...prev, insight]);
+        setScreen(AppScreen.FREQUENCY_REPORT);
+      } catch (e: any) {
+        setError("Analysis protocol failed.");
+      } finally { setLoading(false); }
+    }
+  };
+
+  const advanceDay = () => {
+    if (currentDay < 3) {
+      setCurrentDay(prev => prev + 1);
+      setCurrentQuestionInDayIndex(0);
+      setScreen(AppScreen.DAILY_DASHBOARD);
+    }
   };
 
   const startOnboarding = async () => {
-    if (!coreTruth) return alert("Please answer the core truth question!");
-    if (!setupPhoto) return alert("A selfie is required for Cat-ification!");
-    if (!setupName) return alert("Please enter a name.");
-
+    if (!setupData.catPhoto || !setupData.catName || !setupData.coreTruth) return;
     setLoading(true);
-    setError(null);
     try {
-      const { catImage, description, eyeColor } = await transformToCat(setupPhoto);
-      const questions = await generateQuizFromAnswers(setupName, setupAnswers, coreTruth);
-
-      const newUser: UserProfile = {
-        id: `user_${Date.now()}`,
-        name: setupName,
-        age: parseInt(setupAge) || 24,
-        bio: setupAnswers[0]?.answer.substring(0, 100) + "...",
-        originalPhoto: setupPhoto,
-        catPhoto: catImage,
-        catDescription: description,
-        eyeColor: eyeColor || 'Mystery',
-        questions: questions,
-        deepAnswers: setupAnswers,
-        coreTruth: coreTruth
+      const user: User = {
+        id: 'u_' + Date.now(),
+        displayName: setupData.catName, realName: setupData.realName, dob: setupData.dob, phoneNumber: setupData.phoneNumber,
+        gender: 'Not Specified', location: 'Global', bio: "Broadcasting frequency", interests: [],
+        religion: "Experimental", sexualOrientation: "Fluid", wantsKids: "Open", smokingStatus: "No",
+        humanPhotoUrl: setupData.photos[0], catPhotoUrl: setupData.catPhoto, irisColor: setupData.irisColor,
+        dailyStreak: 0, questions: [], coreTruth: setupData.coreTruth, traitAnswers: []
       };
-
-      setProfiles(prev => [newUser, ...prev]);
-      setScreen(AppScreen.SWIPE);
-    } catch (err: any) {
-      if (err.message?.includes("Requested entity was not found")) {
-        setError("API Key error. Please re-select your key.");
-        await (window as any).aistudio.openSelectKey();
-      } else {
-        setError("Protocol failure. Ensure your API Key is valid and billing is active.");
-      }
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+      setCurrentUser(user);
+      setScreen(AppScreen.DAILY_DASHBOARD);
+    } finally { setLoading(false); }
   };
 
-  const handleQuizAnswer = (answerIndex: number) => {
-    if (!activeQuiz) return;
-    const { profile, questionIndex } = activeQuiz;
-    const isCorrect = answerIndex === profile.questions[questionIndex].correctIndex;
-
-    if (isCorrect) {
-      if (questionIndex === profile.questions.length - 1) {
-        setRevealedIds(prev => new Set(prev).add(profile.id));
-        setScreen(AppScreen.SWIPE);
-        setActiveQuiz(null);
-      } else {
-        setActiveQuiz({ ...activeQuiz, questionIndex: questionIndex + 1 });
-      }
-    } else {
-      alert("Semantic mismatch detected. Verification failed.");
-    }
+  const updateProfile = () => {
+    if (!currentUser) return;
+    setCurrentUser({
+      ...currentUser,
+      realName: setupData.realName || currentUser.realName,
+      phoneNumber: setupData.phoneNumber || currentUser.phoneNumber
+    });
+    setScreen(AppScreen.DAILY_DASHBOARD);
   };
 
-  const renderLanding = () => (
-    <div className="flex flex-col items-center justify-center min-h-screen p-8 bg-gradient-to-br from-orange-500 to-red-600 text-white text-center">
-      <div className="mb-8 p-4 bg-white/20 backdrop-blur-xl rounded-full animate-bounce">
-        <svg xmlns="http://www.w3.org/2000/svg" className="w-20 h-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21c-5.007 0-9-3.993-9-9s3.993-9 9-9 9 3.993 9 9-3.993 9-9 9zm0-16.5c-4.142 0-7.5 3.358-7.5 7.5s3.358 7.5 7.5 7.5 7.5-3.358 7.5-7.5-3.358-7.5-7.5-7.5zM12 9a1.5 1.5 0 110 3 1.5 1.5 0 010-3z" />
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 10a1 1 0 110-2 1 1 0 010 2zm8 0a1 1 0 110-2 1 1 0 010 2zm-4 7s1.5-1.5 3-1.5S15 17 15 17M9 17s1.5-1.5 3-1.5" />
-        </svg>
-      </div>
-      <h1 className="text-7xl font-black mb-4 tracking-tighter italic">CatPhish</h1>
-      <p className="text-xl mb-12 opacity-90 max-w-md font-medium">The only place where getting cat-phished is exactly the point. Unmask your matches.</p>
-      
-      <button onClick={handleEnterLitterBox} className="bg-white text-orange-600 px-12 py-5 rounded-full font-black text-xl shadow-2xl hover:scale-105 active:scale-95 transition-all mb-8 uppercase tracking-tight">
-        Enter the Litter Box
-      </button>
-      
-      <button onClick={() => setShowAbout(true)} className="text-white/60 text-xs font-bold uppercase tracking-widest hover:text-white transition-colors border-b border-white/20 pb-1">
-        Security Architecture
-      </button>
+  const getStats = (qId: string) => {
+    const dist: Record<string, number> = {};
+    seedPool.forEach(s => {
+      const cId = s.answers[qId];
+      dist[cId] = (dist[cId] || 0) + 1;
+    });
+    return dist;
+  };
 
-      {showAbout && (
-        <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-3xl flex items-center justify-center p-6 overflow-y-auto">
-          <div className="max-w-md bg-white text-slate-900 rounded-[2.5rem] p-10 shadow-2xl relative text-left my-auto">
-            <button onClick={() => setShowAbout(false)} className="absolute top-6 right-6 text-slate-300 hover:text-slate-600">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"/></svg>
-            </button>
-            <h2 className="text-3xl font-black text-orange-600 mb-6 italic tracking-tight">Zero Trust Social</h2>
-            <div className="space-y-6 text-sm leading-relaxed text-slate-500">
-              <p><strong className="text-slate-900">The Problem:</strong> Traditional visual identity is a vulnerability. 1-in-4 dating profiles are non-human scripts.</p>
-              <p><strong className="text-slate-900">The Action:</strong> Using Gemini 3's native multimodality, we generate consistent Cat Personas that mirror your pose, clothing, and environment (Privacy-by-Design).</p>
-              <p><strong className="text-slate-900">The Tech:</strong> Seekers must pass 'Logic Traps'—AI-generated semantic verification—to unmask original images. Provenance through personality.</p>
+  const renderDashboard = () => (
+    <div className="min-h-screen bg-slate-50 p-6 pb-32 overflow-y-auto">
+      <header className="flex justify-between items-center py-6 mb-8 shrink-0">
+        <h1 className="text-4xl font-black italic text-orange-600 tracking-tighter">CatPhish</h1>
+        <div className="flex items-center gap-3">
+           <button onClick={() => setScreen(AppScreen.STATS_BOARD)} className="p-2.5 bg-white rounded-2xl shadow-sm border border-slate-100 text-orange-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></button>
+           <button onClick={() => setScreen(AppScreen.EDIT_PROFILE)} className="w-10 h-10 rounded-xl overflow-hidden border-2 border-orange-500 active:scale-95 transition-transform">{currentUser?.catPhotoUrl && <img src={currentUser.catPhotoUrl} className="w-full h-full object-cover" />}</button>
+        </div>
+      </header>
+
+      {analysisHistory.length < currentDay ? (
+        <div className="bg-white p-10 rounded-[4rem] shadow-xl border-t-8 border-orange-500 space-y-12 animate-in zoom-in-95 duration-500 text-center">
+          <div className="space-y-4">
+             <span className="bg-orange-100 text-orange-600 px-5 py-2 rounded-full text-[9px] font-black uppercase tracking-[0.3em]">Protocol Day {currentDay}</span>
+             <h2 className="text-4xl font-black italic leading-tight text-slate-900 tracking-tight">Stage {currentDay} Probes Await.</h2>
+             <p className="text-slate-400 font-medium">Complete the next 5 points of resonance to refine your pool.</p>
+          </div>
+          <button onClick={() => setScreen(AppScreen.SETUP_QUESTIONS)} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl uppercase tracking-tighter active:scale-95 transition-all">Begin Day {currentDay} Probe</button>
+        </div>
+      ) : (
+        <div className="space-y-10">
+          <div className="flex justify-between items-center px-2">
+            <div>
+              <h3 className="text-[11px] font-black uppercase tracking-[0.4em] text-slate-300">Resonant Pool</h3>
+              <p className="text-[9px] font-bold text-slate-400 mt-2 uppercase tracking-widest">Day {currentDay} Broadcast Active</p>
             </div>
+            {currentDay < 3 && (
+              <button onClick={advanceDay} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest">Next Phase</button>
+            )}
+          </div>
+          <div className="grid gap-16 pb-24">
+            {currentMatches.map(m => m.targetUser && (
+              <ProfileCard 
+                key={m.id} profile={m.targetUser} 
+                revealed={revealedIds.has(m.targetUser.id) || currentDay === 3} 
+                connected={connectedIds.has(m.targetUser.id)}
+                matchScore={Math.round(m.compatibilityScore * 100)} 
+                onRevealClick={() => setRevealedIds(prev => new Set(prev).add(m.targetUser!.id))} 
+                onConnectClick={() => setConnectedIds(prev => new Set(prev).add(m.targetUser!.id))}
+              />
+            ))}
           </div>
         </div>
       )}
+
+      <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] bg-slate-900/95 backdrop-blur-3xl rounded-[3rem] p-5 flex justify-around shadow-2xl border border-white/10 z-50">
+         <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="text-orange-500 p-2"><svg className="w-9 h-9" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 00-1.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001 1h2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg></button>
+         <button onClick={() => setScreen(AppScreen.STATS_BOARD)} className="text-slate-400 p-2"><svg className="w-9 h-9" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/></svg></button>
+      </nav>
     </div>
   );
 
-  const renderSetupBasics = () => (
-    <div className="min-h-screen bg-white p-8 pb-32 overflow-y-auto flex flex-col relative z-10">
-      <div className="flex justify-between items-center mb-10">
-        <h2 className="text-4xl font-black text-slate-900 italic tracking-tight">1. The Face</h2>
-        <span className="bg-orange-100 text-orange-600 px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">Step 1</span>
-      </div>
-      
-      <div className="space-y-8 flex-1">
-        <div className="flex flex-col items-center gap-6">
-          <label className="relative group cursor-pointer block">
-            <div className="w-56 h-56 rounded-[3rem] bg-slate-50 border-4 border-dashed border-slate-200 flex items-center justify-center overflow-hidden shadow-inner group-hover:border-orange-400 transition-colors">
-              {setupPhoto ? <img src={setupPhoto} className="w-full h-full object-cover" alt="Selfie" /> : (
-                <div className="text-center p-6 space-y-2">
-                  <svg className="w-12 h-12 mx-auto text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                  <span className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Capture Persona</span>
-                </div>
-              )}
+  const renderStatsBoard = () => (
+    <div className="min-h-screen bg-white p-8 pb-32 overflow-y-auto">
+       <header className="flex justify-between items-center mb-12">
+          <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
+          <h2 className="text-2xl font-black italic tracking-tighter">Population Map</h2>
+          <div className="w-12" />
+       </header>
+       <div className="space-y-12">
+          <div className="bg-orange-600 rounded-[3rem] p-8 text-white shadow-2xl space-y-2">
+             <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Experiment Pool</span>
+             <h3 className="text-5xl font-black italic">55 Pioneers</h3>
+             <p className="text-sm font-medium opacity-80 leading-relaxed italic">The baseline frequency map of CatPhish.</p>
+          </div>
+
+          <div className="bg-slate-50 rounded-[3rem] p-8 border border-slate-100 space-y-8">
+            <h3 className="text-xl font-black uppercase tracking-[0.2em] text-slate-900 italic">Our Methodology</h3>
+            <div className="space-y-8 text-sm leading-relaxed text-slate-600 font-medium">
+              <div className="space-y-2">
+                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">01. The Human Mirror</p>
+                <p>We believe true connection starts beyond the physical. By transforming you into a Feline Proxy, we strip away visual bias, forcing you and your matches to connect through pure personality and semantic "vibe" first.</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">02. Permanent Resonance</p>
+                <p>Thoughtfulness is the core of our experiment. Your protocol answers are locked once submitted. This ensures your matches are seeing your true, unfiltered frequency, not a curated performance that changes by the hour.</p>
+              </div>
+              <div className="space-y-2">
+                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">03. Psychological Anchoring</p>
+                <p>Our 55 Pioneers are human-designed archetypes that established the initial population map. Your answers determine your coordinates in this emotional landscape, matching you with others on a similar psychological wavelength.</p>
+              </div>
             </div>
-            <input type="file" accept="image/*" onChange={handlePhotoUpload} className="hidden" />
-          </label>
-        </div>
-
-        <div className="space-y-6">
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Public Alias</label>
-            <input 
-              type="text" 
-              value={setupName} 
-              onChange={(e) => setSetupName(e.target.value)} 
-              className="w-full p-6 bg-slate-50 border border-slate-200 rounded-[1.5rem] outline-none focus:border-orange-500 font-bold text-slate-800 text-lg"
-              placeholder="e.g. Neon Whiskers"
-            />
           </div>
-          
-          <div className="space-y-2">
-            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Earth Years</label>
-            <input 
-              type="number" 
-              value={setupAge} 
-              onChange={(e) => setSetupAge(e.target.value)} 
-              className="w-full p-6 bg-slate-50 border border-slate-200 rounded-[1.5rem] outline-none focus:border-orange-500 font-bold text-slate-800 text-lg"
-            />
-          </div>
-        </div>
-      </div>
 
-      <div className="pt-10">
-        <button 
-          onClick={() => setScreen(AppScreen.SETUP_QUESTIONS)} 
-          disabled={!setupName || !setupPhoto}
-          className="w-full bg-slate-900 text-white py-6 rounded-3xl font-black text-xl shadow-xl disabled:bg-slate-100 disabled:text-slate-300"
-        >
-          Proceed to Verification
-        </button>
-      </div>
+          <div className="space-y-10">
+             <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-300 px-2">Live Protocol Distribution</h3>
+             {coreQuestions.filter(q => !!userAnswers[q.id]).map(q => {
+                const stats = getStats(q.id);
+                const userChoiceId = userAnswers[q.id];
+                return (
+                  <div key={q.id} className="space-y-4">
+                     <h4 className="text-sm font-black text-slate-900 pr-10">"{q.text}"</h4>
+                     <div className="space-y-3">
+                        {q.options.map(o => {
+                           const count = stats[o.id] || 0;
+                           const percent = Math.round((count / 55) * 100);
+                           const isUser = userChoiceId === o.id;
+                           return (
+                             <div key={o.id} className="relative h-12 bg-slate-50 rounded-2xl overflow-hidden border border-slate-100">
+                                <div className={`absolute inset-y-0 left-0 transition-all duration-[1500ms] ${isUser ? 'bg-orange-500' : 'bg-slate-200'}`} style={{ width: `${percent}%` }} />
+                                <div className="absolute inset-0 px-5 flex justify-between items-center text-[10px] font-black uppercase tracking-wider">
+                                   <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{o.text} {isUser && '(You)'}</span>
+                                   <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{percent}%</span>
+                                </div>
+                             </div>
+                           );
+                        })}
+                     </div>
+                  </div>
+                );
+             })}
+          </div>
+       </div>
     </div>
   );
 
-  const renderSetupQuestions = () => (
-    <div className="min-h-screen bg-white p-8 pb-32 overflow-y-auto flex flex-col relative">
-      <div className="flex justify-between items-center mb-10">
-        <h2 className="text-4xl font-black text-slate-900 italic tracking-tight">2. The Soul</h2>
-        <span className="bg-orange-100 text-orange-600 px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">Step 2</span>
-      </div>
-      
-      <p className="text-slate-400 text-sm font-medium mb-10 leading-relaxed">Select 3 anchors for your Logic Trap. These ensure only genuine humans can unmask your identity.</p>
-      
-      <div className="space-y-6 mb-12 flex-1">
-        {setupAnswers.map((a, i) => (
-          <div key={i} className="bg-orange-50 p-6 rounded-[2rem] border border-orange-100 animate-in slide-in-from-right duration-300">
-            <p className="text-[9px] font-black text-orange-600 uppercase tracking-widest mb-2 opacity-60">{a.question}</p>
-            <p className="text-sm text-slate-700 font-bold">{a.answer}</p>
+  return (
+    <div className="max-w-[450px] mx-auto min-h-screen bg-white shadow-2xl relative overflow-hidden flex flex-col">
+      <div className="flex-1 relative overflow-hidden">
+        {screen === AppScreen.LANDING && (
+          <div className="flex flex-col items-center justify-center min-h-screen p-8 bg-gradient-to-br from-orange-500 to-red-600 text-white text-center">
+            <div className="mb-10 p-8 bg-white/20 backdrop-blur-3xl rounded-[3.5rem] animate-bounce shadow-2xl">
+              <svg className="w-24 h-24 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 21c-5.007 0-9-3.993-9-9s3.993-9 9-9 9 3.993 9 9-3.993 9-9 9zm0-16.5c-4.142 0-7.5 3.358-7.5 7.5s3.358 7.5 7.5 7.5 7.5-3.358 7.5-7.5-3.358-7.5-7.5-7.5zM12 9a1.5 1.5 0 110 3 1.5 1.5 0 010-3z" /></svg>
+            </div>
+            <h1 className="text-8xl font-black mb-6 tracking-tighter italic leading-none text-white">CatPhish</h1>
+            <div className="bg-white/10 backdrop-blur-xl p-10 rounded-[2.5rem] border border-white/20 mb-14 max-w-sm"><p className="text-xl font-black italic leading-tight text-white">No swiping. Complete the 21-point protocol over 3 days to reveal your subconscious frequency.</p></div>
+            <button onClick={handleEnter} className="bg-white text-orange-600 w-full max-w-xs py-7 rounded-full font-black text-2xl shadow-2xl hover:scale-105 transition-all mb-10 uppercase active:scale-95">Enter Experiment</button>
           </div>
-        ))}
+        )}
+        
+        {screen === AppScreen.EDIT_PROFILE && (
+          <div className="min-h-screen bg-white p-8 pb-32 flex flex-col items-center overflow-y-auto">
+             <header className="w-full flex justify-between items-center mb-12">
+                <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
+                <h2 className="text-2xl font-black italic text-slate-900">Logistical Update</h2>
+                <div className="w-12" />
+             </header>
+             <div className="w-full space-y-8">
+                <div className="p-6 bg-slate-900 rounded-[2.5rem] text-white space-y-2 mb-4 shadow-xl">
+                   <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Feline Proxy (Locked)</p>
+                   <h3 className="text-2xl font-black italic">{currentUser?.displayName}</h3>
+                   <p className="text-[9px] font-bold text-orange-400 italic">Frequency Identity and Protocol Answers are permanent to ensure thoughtfulness.</p>
+                </div>
+                
+                <div className="space-y-4">
+                   <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">Real Name</label>
+                   <input type="text" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.realName} onChange={e => setSetupData(s => ({...s, realName: e.target.value}))} />
+                </div>
+                
+                <div className="space-y-4">
+                   <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">WhatsApp Path</label>
+                   <input type="tel" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.phoneNumber} onChange={e => setSetupData(s => ({...s, phoneNumber: e.target.value}))} />
+                </div>
+             </div>
+             <button onClick={updateProfile} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 transition-all active:scale-95">Sync Profile</button>
+          </div>
+        )}
 
-        {setupAnswers.length < 3 && selectedQuestionIndex === null && (
-          <div className="space-y-4">
-            <p className="text-[10px] font-black text-slate-300 uppercase tracking-widest">Semantic Anchors</p>
-            <div className="flex flex-col gap-3">
-              {THIRTY_SIX_QUESTIONS.filter(q => !setupAnswers.find(a => a.question === q)).slice(0, 5).map((q, i) => (
-                <button key={i} onClick={() => setSelectedQuestionIndex(THIRTY_SIX_QUESTIONS.indexOf(q))} className="text-left p-5 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-2xl text-sm font-black text-slate-600">
-                  {q}
+        {screen === AppScreen.SETUP_BASICS && (
+          <div className="min-h-screen bg-white p-8 pb-32 flex flex-col items-center overflow-y-auto text-slate-900">
+            {isTransforming && <LoadingOverlay text="Generating Proxy..." subtext="Syncing Feline Layer" progress={transformProgress} cyclePhotos={setupData.photos} />}
+            <div className="w-full flex justify-between items-center mb-8 shrink-0">
+              <button onClick={() => setScreen(AppScreen.LANDING)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
+              <h2 className="text-2xl font-black italic">Create Profile</h2>
+              <div className="w-12" />
+            </div>
+            <div className="w-full space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+              <div className="space-y-4">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 text-center italic">Upload 3 selfies for your Feline Layer</p>
+                <div className="grid grid-cols-3 gap-4">
+                  {[0, 1, 2].map(i => (
+                    <label key={i} className={`aspect-square rounded-3xl border-4 flex items-center justify-center overflow-hidden cursor-pointer shadow-xl transition-all ${setupData.photos[i] ? 'border-orange-500' : 'border-slate-100 bg-slate-50'}`}>
+                      {setupData.photos[i] ? <img src={setupData.photos[i]} className="w-full h-full object-cover" /> : <svg className="w-8 h-8 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>}
+                      <input type="file" className="hidden" accept="image/*" onChange={e => {
+                        const file = e.target.files?.[0]; if (file) {
+                          const r = new FileReader(); r.onload = () => { const np = [...setupData.photos]; np[i] = r.result as string; setSetupData(prev => ({...prev, photos: np})); }; r.readAsDataURL(file);
+                        }
+                      }} />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-6">
+                 <input type="text" placeholder="Cat Name" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none" value={setupData.catName} onChange={e => setSetupData(p => ({...p, catName: e.target.value}))} />
+                 <input type="text" placeholder="Real Name (Private)" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none" value={setupData.realName} onChange={e => setSetupData(p => ({...p, realName: e.target.value}))} />
+                 <div className="space-y-2">
+                   <input type="tel" placeholder="WhatsApp (e.g. +65 8123 4567)" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none" value={setupData.phoneNumber} onChange={e => setSetupData(p => ({...p, phoneNumber: e.target.value}))} />
+                   <p className="px-6 text-[10px] font-black text-orange-600 uppercase tracking-tighter italic text-center">Country Code Required</p>
+                 </div>
+              </div>
+            </div>
+            <button onClick={generateProxies} disabled={!setupData.catName || !setupData.realName || !setupData.photos[0] || !setupData.phoneNumber} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 mb-10 transition-all active:scale-95 disabled:opacity-50">Transform Me</button>
+          </div>
+        )}
+
+        {screen === AppScreen.SETUP_PICK_CAT && (
+          <div className="min-h-screen bg-white p-8 flex flex-col items-center overflow-y-auto text-slate-900">
+            <h2 className="text-2xl font-black italic mb-10">Select Mask</h2>
+            <div className="grid gap-8 w-full pb-20">
+              {setupData.catCandidates.map((c, i) => (
+                <button key={i} onClick={() => { setSetupData(prev => ({ ...prev, catPhoto: c.image, irisColor: c.iris })); setScreen(AppScreen.SETUP_DETAILS); }} className="relative w-full aspect-video rounded-[3rem] overflow-hidden border-4 border-slate-100 hover:border-orange-500 transition-all shadow-xl group">
+                  <img src={c.image} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white font-black uppercase tracking-widest">Select Protocol Layer</div>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        {selectedQuestionIndex !== null && (
-          <div className="bg-white border-4 border-orange-500 p-6 rounded-[2.5rem] shadow-2xl space-y-4 mb-32">
-             <p className="font-black text-slate-800 text-lg italic leading-tight">{THIRTY_SIX_QUESTIONS[selectedQuestionIndex]}</p>
-             <textarea 
-               autoFocus
-               className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-slate-700 font-bold min-h-[140px]" 
-               placeholder="Your honest meow..." 
-               value={currentDraftAnswer}
-               onChange={(e) => setCurrentDraftAnswer(e.target.value)}
-             />
-             <div className="flex gap-3">
-               <button onClick={addAnswer} className="flex-1 bg-orange-500 text-white py-4 rounded-xl font-black">Secure Answer</button>
-               <button onClick={() => setSelectedQuestionIndex(null)} className="px-6 bg-slate-100 text-slate-400 py-4 rounded-xl font-black">Drop</button>
-             </div>
+        {screen === AppScreen.SETUP_DETAILS && (
+          <div className="min-h-screen bg-white p-8 pb-32 flex flex-col items-center overflow-y-auto text-slate-900">
+            <h2 className="text-2xl font-black italic mb-12">Final Details</h2>
+            <div className="w-full space-y-12">
+               <div className="space-y-6">
+                  <div className="flex flex-col gap-1 text-center">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-orange-600">Protocol Entry Truth</label>
+                    <p className="text-[9px] font-bold text-slate-400 italic">This initial choice is permanent.</p>
+                  </div>
+                  <div className="grid gap-3">
+                    {CORE_VIBE_TRUTHS.map(truth => (
+                      <button 
+                        key={truth.id} 
+                        onClick={() => setSetupData(p => ({...p, coreTruth: truth.text}))} 
+                        className={`w-full p-6 text-left rounded-[2rem] font-black text-sm border-2 transition-all active:scale-[0.98] ${setupData.coreTruth === truth.text ? 'bg-slate-900 text-white border-slate-900 shadow-xl' : 'bg-slate-50 text-slate-900 border-slate-100'}`}
+                      >
+                        {truth.text}
+                      </button>
+                    ))}
+                  </div>
+               </div>
+            </div>
+            <button onClick={startOnboarding} disabled={!setupData.coreTruth} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 transition-all active:scale-95 disabled:opacity-30">Finish Setup</button>
           </div>
         )}
-      </div>
 
-      <div className="pt-10">
-        <button 
-          disabled={setupAnswers.length < 3}
-          onClick={() => setScreen(AppScreen.SETUP_CORE)}
-          className="w-full bg-slate-900 text-white py-6 rounded-3xl font-black text-xl shadow-xl disabled:bg-slate-50 disabled:text-slate-200"
-        >
-          Final Truth Check
-        </button>
-      </div>
-    </div>
-  );
-
-  const renderSetupCore = () => (
-    <div className="min-h-screen bg-orange-600 p-10 flex flex-col text-white overflow-y-auto">
-      <div className="flex justify-between items-center mb-16">
-        <h2 className="text-4xl font-black italic tracking-tighter">3. The Core</h2>
-        <span className="bg-white/20 px-3 py-1 rounded-full text-xs font-black uppercase tracking-widest">Step 3</span>
-      </div>
-      
-      <div className="space-y-10 flex-1">
-        <div className="space-y-4">
-          <p className="text-2xl font-black leading-tight italic">
-            Do you care more about physical aesthetics or internal semantics? And what is your objective here: a flash or a flame?
-          </p>
-          <p className="text-[10px] font-black uppercase tracking-widest opacity-60">Zero Trust Verification Active</p>
-        </div>
-
-        <textarea 
-          value={coreTruth}
-          onChange={(e) => setCoreTruth(e.target.value)}
-          placeholder="Enter the deep truth..."
-          className="w-full p-8 bg-white/10 backdrop-blur-md border border-white/20 rounded-[2.5rem] outline-none placeholder:text-white/30 font-bold text-lg min-h-[250px] focus:bg-white/20 transition-all"
-        />
-      </div>
-
-      <div className="py-10">
-        <button 
-          onClick={startOnboarding}
-          disabled={!coreTruth || loading}
-          className="w-full bg-white text-orange-600 py-6 rounded-3xl font-black text-2xl shadow-2xl disabled:bg-white/20 disabled:text-white/30"
-        >
-          {loading ? 'Propagating Purr...' : 'Execute Protocol'}
-        </button>
-        {error && <p className="text-white text-center text-xs font-black bg-black/40 p-4 rounded-2xl mt-6 uppercase tracking-widest border border-white/10">{error}</p>}
-      </div>
-    </div>
-  );
-
-  const renderSwipe = () => {
-    const currentProfile = profiles[currentIndex];
-    if (!currentProfile) return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-8 text-center">
-        <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center animate-spin mb-6">
-          <svg className="w-10 h-10 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m0 11v1m8-5h-1M4 11H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707" /></svg>
-        </div>
-        <p className="font-black text-slate-300 uppercase tracking-widest">Searching the Litter...</p>
-      </div>
-    );
-    
-    const isRevealed = revealedIds.has(currentProfile.id);
-    return (
-      <div className="min-h-screen bg-slate-50 flex flex-col items-center p-6">
-        <header className="w-full flex justify-between items-center py-6 mb-4">
-          <div className="text-4xl font-black text-orange-600 tracking-tighter italic">CatPhish</div>
-        </header>
-        <div className="w-full max-w-sm flex-1 flex flex-col gap-8">
-          <ProfileCard profile={currentProfile} revealed={isRevealed} onRevealClick={() => { setActiveQuiz({ profile: currentProfile, questionIndex: 0 }); setScreen(AppScreen.QUIZ); }} />
-          <div className="flex justify-around items-center pt-4">
-            <button onClick={() => setCurrentIndex((currentIndex + 1) % profiles.length)} className="w-16 h-16 bg-white rounded-full shadow-xl flex items-center justify-center text-slate-300 hover:text-red-500 border border-slate-100 active:scale-90 transition-all">
-              <svg className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
-            <button onClick={() => setCurrentIndex((currentIndex + 1) % profiles.length)} className="w-24 h-24 bg-orange-600 rounded-full shadow-2xl flex items-center justify-center text-white active:scale-90 transition-all">
-              <svg className="h-12 w-12" fill="currentColor" viewBox="0 0 24 24"><path d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" /></svg>
-            </button>
+        {screen === AppScreen.SETUP_QUESTIONS && (
+          <div className="min-h-screen bg-slate-900 text-white p-8 flex flex-col items-center justify-center overflow-hidden">
+             <header className="absolute top-8 left-8 right-8 flex justify-between items-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-orange-500">Day {currentDay} Protocol {currentQuestionInDayIndex + 1}/5</span>
+                <div className="h-1 w-32 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-orange-600 transition-all duration-500" style={{ width: `${((currentQuestionInDayIndex + 1) / 5) * 100}%` }} /></div>
+             </header>
+             <div className="w-full space-y-12 animate-in zoom-in-95 duration-500">
+                <h3 className="text-4xl font-black italic tracking-tighter leading-tight text-center px-4 text-white">"{currentQuestion?.text}"</h3>
+                <div className="grid gap-4 w-full">
+                  {currentQuestion?.options.map(opt => (
+                    <button key={opt.id} onClick={() => handleChoice(opt.id)} className="w-full p-6 rounded-[2rem] bg-white/5 border border-white/10 hover:border-orange-500 text-left font-bold transition-all active:scale-95 hover:bg-white/10 text-white">
+                      {opt.text}
+                    </button>
+                  ))}
+                </div>
+             </div>
+             {loading && <LoadingOverlay text="Analyzing Protocol..." subtext="Syncing Population Data" />}
           </div>
-        </div>
-      </div>
-    );
-  };
+        )}
 
-  const renderQuiz = () => {
-    if (!activeQuiz) return null;
-    const { profile, questionIndex } = activeQuiz;
-    const q = profile.questions[questionIndex];
-    return (
-      <div className="min-h-screen bg-orange-600 p-8 flex flex-col justify-center items-center">
-        <div className="bg-white rounded-[3.5rem] p-12 shadow-2xl w-full max-w-sm">
-          <div className="flex justify-between mb-10 items-center">
-             <h3 className="text-orange-600 font-black uppercase tracking-widest text-[9px] italic">Logic Trap {questionIndex + 1} of 3</h3>
-          </div>
-          <h2 className="text-2xl font-black text-slate-800 mb-10 leading-tight italic">"{q.question}"</h2>
-          <div className="space-y-4">
-            {q.options.map((opt, i) => (
-              <button key={i} onClick={() => handleQuizAnswer(i)} className="w-full text-left p-6 rounded-[2rem] border-2 border-slate-100 hover:border-orange-500 hover:bg-orange-50 font-bold text-slate-700 transition-all">
-                {opt}
-              </button>
-            ))}
-          </div>
-          <button onClick={() => { setScreen(AppScreen.SWIPE); setActiveQuiz(null); }} className="mt-12 text-slate-300 w-full text-[10px] font-black uppercase tracking-widest">Abandon Unmasking</button>
-        </div>
-      </div>
-    );
-  };
+        {screen === AppScreen.DAILY_DASHBOARD && renderDashboard()}
 
-  return (
-    <div className="max-w-[450px] mx-auto min-h-screen relative bg-white shadow-2xl overflow-x-hidden">
-      {screen === AppScreen.LANDING && renderLanding()}
-      {screen === AppScreen.SETUP_BASICS && renderSetupBasics()}
-      {screen === AppScreen.SETUP_QUESTIONS && renderSetupQuestions()}
-      {screen === AppScreen.SETUP_CORE && renderSetupCore()}
-      {screen === AppScreen.SWIPE && renderSwipe()}
-      {screen === AppScreen.QUIZ && renderQuiz()}
+        {screen === AppScreen.FREQUENCY_REPORT && (
+          <div className="min-h-screen bg-slate-900 text-white p-8 flex flex-col overflow-y-auto">
+            <header className="flex justify-between items-center mb-10">
+               <h2 className="text-2xl font-black italic text-orange-600">Day {currentDay} Report</h2>
+               <span className="text-[10px] font-black uppercase tracking-widest bg-white/10 px-4 py-2 rounded-full border border-white/10 text-white">Synchronized</span>
+            </header>
+            <div className="flex-1 space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+               <div className="space-y-4 text-white">
+                  <span className="text-[10px] font-black uppercase text-orange-500 tracking-[0.4em]">Subconscious Archetype</span>
+                  <h3 className="text-5xl font-black italic tracking-tighter leading-none text-white">{analysisHistory[currentDay-1]?.archetype}</h3>
+                  <p className="text-white/60 text-lg leading-relaxed">{analysisHistory[currentDay-1]?.summary}</p>
+               </div>
+               <div className="grid gap-6">
+                  <div className="bg-white/5 p-8 rounded-[3rem] border border-white/10 space-y-4">
+                     <span className="text-[10px] font-black uppercase tracking-widest opacity-40 text-white">Subconscious Search</span>
+                     <p className="font-bold text-xl leading-tight text-white">"{analysisHistory[currentDay-1]?.seeking}"</p>
+                  </div>
+                  <div className="bg-orange-600/10 p-8 rounded-[3rem] border border-orange-600/20 space-y-4">
+                     <span className="text-[10px] font-black uppercase tracking-widest opacity-40 text-white">Dating Shadow</span>
+                     <p className="font-bold text-xl leading-tight italic text-white">"{analysisHistory[currentDay-1]?.shadow}"</p>
+                  </div>
+               </div>
+            </div>
+            <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="w-full bg-orange-600 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 mb-8 uppercase tracking-tighter active:scale-95 transition-all">View Resonant Pool</button>
+          </div>
+        )}
+        
+        {screen === AppScreen.STATS_BOARD && renderStatsBoard()}
+      </div>
+      {error && (<div className="fixed top-8 left-1/2 -translate-x-1/2 z-[300] bg-red-600 text-white px-8 py-4 rounded-full text-xs font-black shadow-2xl border-2 border-white/20">{error}</div>)}
     </div>
   );
 };
