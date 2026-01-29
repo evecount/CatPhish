@@ -47,6 +47,7 @@ const LoadingOverlay: React.FC<{
 
 const App: React.FC = () => {
   const [screen, setScreen] = useState<AppScreen>(AppScreen.LANDING);
+  const [dashTab, setDashTab] = useState<'pool' | 'methodology'>('pool');
   const [currentDay, setCurrentDay] = useState(1);
   const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
   const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set());
@@ -71,13 +72,11 @@ const App: React.FC = () => {
   // --- PERSISTENCE: HYBRID FIREBASE + LOCALSTORAGE ---
   useEffect(() => {
     const restoreState = async () => {
-      // 1. Try LocalStorage for the User ID first
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         try {
           const data = JSON.parse(saved);
           if (data.currentUser?.id) {
-            // 2. Sync from Firestore for the latest truths
             const docRef = doc(db, "users", data.currentUser.id);
             const docSnap = await getDoc(docRef);
             
@@ -91,7 +90,6 @@ const App: React.FC = () => {
               setConnectedIds(new Set(cloudData.connectedIds || []));
               setScreen(AppScreen.DAILY_DASHBOARD);
             } else {
-              // Fallback to local if cloud fails
               setCurrentUser(data.currentUser);
               setUserAnswers(data.userAnswers || {});
               setAnalysisHistory(data.analysisHistory || []);
@@ -105,7 +103,6 @@ const App: React.FC = () => {
     restoreState();
   }, []);
 
-  // Sync to Cloud whenever major state changes
   useEffect(() => {
     if (currentUser?.id) {
       const syncToCloud = async () => {
@@ -120,7 +117,6 @@ const App: React.FC = () => {
             lastActive: new Date().toISOString()
           }, { merge: true });
           
-          // Also update local for offline safety
           localStorage.setItem(STORAGE_KEY, JSON.stringify({
             currentUser, userAnswers, analysisHistory, currentDay
           }));
@@ -181,7 +177,6 @@ const App: React.FC = () => {
   }, [currentUser, userAnswers]);
 
   const handleEnter = async () => {
-    // Check for API key logic (sandboxed vs local)
     if (typeof (window as any).aistudio !== 'undefined') {
        if (!(await (window as any).aistudio.hasSelectedApiKey())) await (window as any).aistudio.openSelectKey();
     }
@@ -203,10 +198,7 @@ const App: React.FC = () => {
       setSetupData(prev => ({ ...prev, catCandidates: candidates }));
       setScreen(AppScreen.SETUP_PICK_CAT);
     } catch (e: any) {
-      if (e?.message?.includes("Requested entity was not found") && (window as any).aistudio) {
-        await (window as any).aistudio.openSelectKey();
-      }
-      setError("Transformation protocol failed. Check your API key.");
+      setError("Transformation failed. Check your API key.");
     } finally { setIsTransforming(false); }
   };
 
@@ -234,6 +226,7 @@ const App: React.FC = () => {
     if (currentDay < 3) {
       setCurrentDay(prev => prev + 1);
       setCurrentQuestionInDayIndex(0);
+      setDashTab('pool');
       setScreen(AppScreen.DAILY_DASHBOARD);
     }
   };
@@ -251,6 +244,7 @@ const App: React.FC = () => {
         dailyStreak: 0, questions: [], coreTruth: setupData.coreTruth, traitAnswers: []
       };
       setCurrentUser(user);
+      setDashTab('pool');
       setScreen(AppScreen.DAILY_DASHBOARD);
     } finally { setLoading(false); }
   };
@@ -274,119 +268,95 @@ const App: React.FC = () => {
     return dist;
   };
 
+  const renderMethodology = () => (
+    <div className="space-y-12 pb-24 animate-in fade-in duration-700">
+      <div className="bg-orange-600 rounded-[3rem] p-8 text-white shadow-2xl space-y-2">
+         <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Experiment Pool</span>
+         <h3 className="text-5xl font-black italic">55 Pioneers</h3>
+         <p className="text-sm font-medium opacity-80 leading-relaxed italic">The baseline frequency map of CatPhish.</p>
+      </div>
+
+      <div className="bg-white rounded-[3rem] p-8 border border-slate-100 shadow-sm space-y-8">
+        <h3 className="text-xl font-black uppercase tracking-[0.2em] text-slate-900 italic">The Methodology</h3>
+        <div className="space-y-8 text-sm leading-relaxed text-slate-600 font-medium">
+          <div className="space-y-2">
+            <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">01. The Human Mirror</p>
+            <p>We strip away visual bias. By transforming you into a Feline Proxy, we force a connection through semantic vibe first. Your human face is only revealed to those who align with your frequency.</p>
+          </div>
+          <div className="space-y-2">
+            <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">02. Locked Protocol</p>
+            <p>Your answers are permanent. We value thoughtfulness over performance. In a world of infinite editing, CatPhish captures your first, truest resonance.</p>
+          </div>
+          <div className="space-y-2">
+            <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">03. Subconscious Matching</p>
+            <p>Using Gemini 3, we analyze the "why" behind your choices, matching you with others on a similar psychological wavelength, not just similar interests.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
   const renderDashboard = () => (
     <div className="min-h-screen bg-slate-50 p-6 pb-32 overflow-y-auto">
       <header className="flex justify-between items-center py-6 mb-8 shrink-0">
         <h1 className="text-4xl font-black italic text-orange-600 tracking-tighter">CatPhish</h1>
         <div className="flex items-center gap-3">
-           <button onClick={() => setScreen(AppScreen.STATS_BOARD)} className="p-2.5 bg-white rounded-2xl shadow-sm border border-slate-100 text-orange-600"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg></button>
+           <button onClick={() => setDashTab(prev => prev === 'pool' ? 'methodology' : 'pool')} className={`p-2.5 rounded-2xl shadow-sm border transition-all ${dashTab === 'methodology' ? 'bg-orange-600 text-white border-orange-600' : 'bg-white text-orange-600 border-slate-100'}`}>
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+           </button>
            <button onClick={() => setScreen(AppScreen.EDIT_PROFILE)} className="w-10 h-10 rounded-xl overflow-hidden border-2 border-orange-500 active:scale-95 transition-transform">{currentUser?.catPhotoUrl && <img src={currentUser.catPhotoUrl} className="w-full h-full object-cover" />}</button>
         </div>
       </header>
 
-      {analysisHistory.length < currentDay ? (
-        <div className="bg-white p-10 rounded-[4rem] shadow-xl border-t-8 border-orange-500 space-y-12 animate-in zoom-in-95 duration-500 text-center">
-          <div className="space-y-4">
-             <span className="bg-orange-100 text-orange-600 px-5 py-2 rounded-full text-[9px] font-black uppercase tracking-[0.3em]">Protocol Day {currentDay}</span>
-             <h2 className="text-4xl font-black italic leading-tight text-slate-900 tracking-tight">Stage {currentDay} Probes Await.</h2>
-             <p className="text-slate-400 font-medium">Complete the next 5 points of resonance to refine your pool.</p>
-          </div>
-          <button onClick={() => setScreen(AppScreen.SETUP_QUESTIONS)} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl uppercase tracking-tighter active:scale-95 transition-all">Begin Day {currentDay} Probe</button>
-        </div>
-      ) : (
-        <div className="space-y-10">
-          <div className="flex justify-between items-center px-2">
-            <div>
-              <h3 className="text-[11px] font-black uppercase tracking-[0.4em] text-slate-300">Resonant Pool</h3>
-              <p className="text-[9px] font-bold text-slate-400 mt-2 uppercase tracking-widest">Day {currentDay} Broadcast Active</p>
+      {/* Dash Tabs Control */}
+      <div className="flex bg-white p-2 rounded-3xl mb-10 shadow-sm border border-slate-100">
+         <button onClick={() => setDashTab('pool')} className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${dashTab === 'pool' ? 'bg-slate-900 text-white shadow-xl' : 'text-slate-400'}`}>The Pool</button>
+         <button onClick={() => setDashTab('methodology')} className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${dashTab === 'methodology' ? 'bg-slate-900 text-white shadow-xl' : 'text-slate-400'}`}>The About</button>
+      </div>
+
+      {dashTab === 'methodology' ? renderMethodology() : (
+        <>
+          {analysisHistory.length < currentDay ? (
+            <div className="bg-white p-10 rounded-[4rem] shadow-xl border-t-8 border-orange-500 space-y-12 animate-in zoom-in-95 duration-500 text-center">
+              <div className="space-y-4">
+                 <span className="bg-orange-100 text-orange-600 px-5 py-2 rounded-full text-[9px] font-black uppercase tracking-[0.3em]">Protocol Day {currentDay}</span>
+                 <h2 className="text-4xl font-black italic leading-tight text-slate-900 tracking-tight">Stage {currentDay} Probes Await.</h2>
+                 <p className="text-slate-400 font-medium">Complete the next 5 points of resonance to refine your pool.</p>
+              </div>
+              <button onClick={() => setScreen(AppScreen.SETUP_QUESTIONS)} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl uppercase tracking-tighter active:scale-95 transition-all">Begin Day {currentDay} Probe</button>
             </div>
-            {currentDay < 3 && (
-              <button onClick={advanceDay} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest">Next Phase</button>
-            )}
-          </div>
-          <div className="grid gap-16 pb-24">
-            {currentMatches.map(m => m.targetUser && (
-              <ProfileCard 
-                key={m.id} profile={m.targetUser} 
-                revealed={revealedIds.has(m.targetUser.id) || currentDay === 3} 
-                connected={connectedIds.has(m.targetUser.id)}
-                matchScore={Math.round(m.compatibilityScore * 100)} 
-                onRevealClick={() => setRevealedIds(prev => new Set(prev).add(m.targetUser!.id))} 
-                onConnectClick={() => setConnectedIds(prev => new Set(prev).add(m.targetUser!.id))}
-              />
-            ))}
-          </div>
-        </div>
+          ) : (
+            <div className="space-y-10">
+              <div className="flex justify-between items-center px-2">
+                <div>
+                  <h3 className="text-[11px] font-black uppercase tracking-[0.4em] text-slate-300">Resonant Pool</h3>
+                  <p className="text-[9px] font-bold text-slate-400 mt-2 uppercase tracking-widest">Day {currentDay} Broadcast Active</p>
+                </div>
+                {currentDay < 3 && (
+                  <button onClick={advanceDay} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest">Next Phase</button>
+                )}
+              </div>
+              <div className="grid gap-16 pb-24">
+                {currentMatches.map(m => m.targetUser && (
+                  <ProfileCard 
+                    key={m.id} profile={m.targetUser} 
+                    revealed={revealedIds.has(m.targetUser.id) || currentDay === 3} 
+                    connected={connectedIds.has(m.targetUser.id)}
+                    matchScore={Math.round(m.compatibilityScore * 100)} 
+                    onRevealClick={() => setRevealedIds(prev => new Set(prev).add(m.targetUser!.id))} 
+                    onConnectClick={() => setConnectedIds(prev => new Set(prev).add(m.targetUser!.id))}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] bg-slate-900/95 backdrop-blur-3xl rounded-[3rem] p-5 flex justify-around shadow-2xl border border-white/10 z-50">
-         <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="text-orange-500 p-2"><svg className="w-9 h-9" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 00-1.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001 1h2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg></button>
+         <button onClick={() => { setScreen(AppScreen.DAILY_DASHBOARD); setDashTab('pool'); }} className="text-orange-500 p-2"><svg className="w-9 h-9" fill="currentColor" viewBox="0 0 20 20"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 00-1.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001 1h2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg></button>
          <button onClick={() => setScreen(AppScreen.STATS_BOARD)} className="text-slate-400 p-2"><svg className="w-9 h-9" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"/></svg></button>
       </nav>
-    </div>
-  );
-
-  const renderStatsBoard = () => (
-    <div className="min-h-screen bg-white p-8 pb-32 overflow-y-auto">
-       <header className="flex justify-between items-center mb-12">
-          <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
-          <h2 className="text-2xl font-black italic tracking-tighter">Population Map</h2>
-          <div className="w-12" />
-       </header>
-       <div className="space-y-12">
-          <div className="bg-orange-600 rounded-[3rem] p-8 text-white shadow-2xl space-y-2">
-             <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Experiment Pool</span>
-             <h3 className="text-5xl font-black italic">55 Pioneers</h3>
-             <p className="text-sm font-medium opacity-80 leading-relaxed italic">The baseline frequency map of CatPhish.</p>
-          </div>
-
-          <div className="bg-slate-50 rounded-[3rem] p-8 border border-slate-100 space-y-8">
-            <h3 className="text-xl font-black uppercase tracking-[0.2em] text-slate-900 italic">Our Methodology</h3>
-            <div className="space-y-8 text-sm leading-relaxed text-slate-600 font-medium">
-              <div className="space-y-2">
-                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">01. The Human Mirror</p>
-                <p>We believe true connection starts beyond the physical. By transforming you into a Feline Proxy, we strip away visual bias, forcing you and your matches to connect through pure personality and semantic "vibe" first.</p>
-              </div>
-              <div className="space-y-2">
-                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">02. Permanent Resonance</p>
-                <p>Thoughtfulness is the core of our experiment. Your protocol answers are locked once submitted. This ensures your matches are seeing your true, unfiltered frequency, not a curated performance that changes by the hour.</p>
-              </div>
-              <div className="space-y-2">
-                <p className="text-[10px] font-black text-orange-600 uppercase tracking-widest">03. Psychological Anchoring</p>
-                <p>Our 55 Pioneers are human-designed archetypes that established the initial population map. Your answers determine your coordinates in this emotional landscape, matching you with others on a similar psychological wavelength.</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-10">
-             <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-300 px-2">Live Protocol Distribution</h3>
-             {coreQuestions.filter(q => !!userAnswers[q.id]).map(q => {
-                const stats = getStats(q.id);
-                const userChoiceId = userAnswers[q.id];
-                return (
-                  <div key={q.id} className="space-y-4">
-                     <h4 className="text-sm font-black text-slate-900 pr-10">"{q.text}"</h4>
-                     <div className="space-y-3">
-                        {q.options.map(o => {
-                           const count = stats[o.id] || 0;
-                           const percent = Math.round((count / 55) * 100);
-                           const isUser = userChoiceId === o.id;
-                           return (
-                             <div key={o.id} className="relative h-12 bg-slate-50 rounded-2xl overflow-hidden border border-slate-100">
-                                <div className={`absolute inset-y-0 left-0 transition-all duration-[1500ms] ${isUser ? 'bg-orange-500' : 'bg-slate-200'}`} style={{ width: `${percent}%` }} />
-                                <div className="absolute inset-0 px-5 flex justify-between items-center text-[10px] font-black uppercase tracking-wider">
-                                   <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{o.text} {isUser && '(You)'}</span>
-                                   <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{percent}%</span>
-                                </div>
-                             </div>
-                           );
-                        })}
-                     </div>
-                  </div>
-                );
-             })}
-          </div>
-       </div>
     </div>
   );
 
@@ -400,7 +370,22 @@ const App: React.FC = () => {
             </div>
             <h1 className="text-8xl font-black mb-6 tracking-tighter italic leading-none text-white">CatPhish</h1>
             <div className="bg-white/10 backdrop-blur-xl p-10 rounded-[2.5rem] border border-white/20 mb-14 max-w-sm"><p className="text-xl font-black italic leading-tight text-white">No swiping. Complete the 21-point protocol over 3 days to reveal your subconscious frequency.</p></div>
-            <button onClick={handleEnter} className="bg-white text-orange-600 w-full max-w-xs py-7 rounded-full font-black text-2xl shadow-2xl hover:scale-105 transition-all mb-10 uppercase active:scale-95">Enter Experiment</button>
+            <button onClick={handleEnter} className="bg-white text-orange-600 w-full max-w-xs py-7 rounded-full font-black text-2xl shadow-2xl hover:scale-105 transition-all mb-4 uppercase active:scale-95">Enter Experiment</button>
+            <button onClick={() => setScreen(AppScreen.ABOUT)} className="text-white/60 font-black uppercase text-[10px] tracking-widest hover:text-white transition-colors">About the Protocol</button>
+          </div>
+        )}
+
+        {screen === AppScreen.ABOUT && (
+          <div className="min-h-screen bg-white p-8 overflow-y-auto">
+             <header className="flex justify-between items-center mb-10">
+                <button onClick={() => setScreen(AppScreen.LANDING)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
+                <h2 className="text-2xl font-black italic tracking-tighter">The About</h2>
+                <div className="w-12" />
+             </header>
+             {renderMethodology()}
+             <div className="fixed bottom-10 left-8 right-8">
+                <button onClick={() => setScreen(AppScreen.SETUP_BASICS)} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl uppercase tracking-tighter active:scale-95">Begin Onboarding</button>
+             </div>
           </div>
         )}
         
@@ -425,7 +410,7 @@ const App: React.FC = () => {
                 
                 <div className="space-y-4">
                    <label className="px-6 text-[10px] font-black text-slate-400 uppercase tracking-widest">WhatsApp Path</label>
-                   <input type="tel" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.phoneNumber} onChange={e => setSetupData(s => ({...s, phoneNumber: e.target.value}))} />
+                   <input type="tel" className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2.5rem] font-black text-xl text-slate-900 outline-none focus:border-orange-200 transition-colors" defaultValue={currentUser?.phoneNumber} onChange={e => setSetupData(p => ({...p, phoneNumber: e.target.value}))} />
                 </div>
              </div>
              <button onClick={updateProfile} className="w-full bg-slate-900 text-white py-7 rounded-[2.5rem] font-black text-2xl shadow-2xl mt-12 transition-all active:scale-95">Sync Profile</button>
@@ -558,7 +543,50 @@ const App: React.FC = () => {
           </div>
         )}
         
-        {screen === AppScreen.STATS_BOARD && renderStatsBoard()}
+        {screen === AppScreen.STATS_BOARD && (
+          <div className="min-h-screen bg-white p-8 pb-32 overflow-y-auto">
+             <header className="flex justify-between items-center mb-12">
+                <button onClick={() => setScreen(AppScreen.DAILY_DASHBOARD)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7"/></svg></button>
+                <h2 className="text-2xl font-black italic tracking-tighter">Population Map</h2>
+                <div className="w-12" />
+             </header>
+             <div className="space-y-12">
+                <div className="bg-orange-600 rounded-[3rem] p-8 text-white shadow-2xl space-y-2">
+                   <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Experiment Pool</span>
+                   <h3 className="text-5xl font-black italic">55 Pioneers</h3>
+                   <p className="text-sm font-medium opacity-80 leading-relaxed italic">The baseline frequency map of CatPhish.</p>
+                </div>
+                <div className="space-y-10">
+                   <h3 className="text-xs font-black uppercase tracking-[0.3em] text-slate-300 px-2">Live Protocol Distribution</h3>
+                   {coreQuestions.filter(q => !!userAnswers[q.id]).map(q => {
+                      const stats = getStats(q.id);
+                      const userChoiceId = userAnswers[q.id];
+                      return (
+                        <div key={q.id} className="space-y-4">
+                           <h4 className="text-sm font-black text-slate-900 pr-10">"{q.text}"</h4>
+                           <div className="space-y-3">
+                              {q.options.map(o => {
+                                 const count = stats[o.id] || 0;
+                                 const percent = Math.round((count / 55) * 100);
+                                 const isUser = userChoiceId === o.id;
+                                 return (
+                                   <div key={o.id} className="relative h-12 bg-slate-50 rounded-2xl overflow-hidden border border-slate-100">
+                                      <div className={`absolute inset-y-0 left-0 transition-all duration-[1500ms] ${isUser ? 'bg-orange-500' : 'bg-slate-200'}`} style={{ width: `${percent}%` }} />
+                                      <div className="absolute inset-0 px-5 flex justify-between items-center text-[10px] font-black uppercase tracking-wider">
+                                         <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{o.text} {isUser && '(You)'}</span>
+                                         <span className={percent > 40 || isUser ? 'text-white' : 'text-slate-500'}>{percent}%</span>
+                                      </div>
+                                   </div>
+                                 );
+                              })}
+                           </div>
+                        </div>
+                      );
+                   })}
+                </div>
+             </div>
+          </div>
+        )}
       </div>
       {error && (<div className="fixed top-8 left-1/2 -translate-x-1/2 z-[300] bg-red-600 text-white px-8 py-4 rounded-full text-xs font-black shadow-2xl border-2 border-white/20">{error}</div>)}
     </div>

@@ -75,6 +75,7 @@ export interface QuizQuestion {
 
 export enum AppScreen {
   LANDING = 'LANDING',
+  ABOUT = 'ABOUT',
   SETUP_BASICS = 'SETUP_BASICS',
   SETUP_PICK_CAT = 'SETUP_PICK_CAT',
   SETUP_DETAILS = 'SETUP_DETAILS',
